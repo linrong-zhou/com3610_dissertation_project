@@ -1,6 +1,5 @@
 import random
 import numpy as np
-import evaluate
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -83,7 +82,6 @@ for desc, split in ood_configs:
 # =========================================================
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True)
 data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
-acc_metric = evaluate.load("accuracy")
 
 
 def tokenize_fn(examples):
@@ -98,7 +96,8 @@ def tokenize_fn(examples):
 def compute_metrics(eval_pred):
     logits, labels = eval_pred
     preds = np.argmax(logits, axis=-1)
-    return acc_metric.compute(predictions=preds, references=labels)
+    accuracy = (preds == labels).astype(np.float32).mean().item()
+    return {"accuracy": accuracy}
 
 
 print("Tokenizing OOD sets...")
@@ -106,7 +105,7 @@ tok_ood = {
     k: v.map(
         tokenize_fn,
         batched=True,
-        remove_columns=[c for c in v.column_names if c not in ["label"]],
+        remove_columns=[c for c in v.column_names if c != "label"],
     )
     for k, v in ood_datasets.items()
 }
@@ -131,7 +130,6 @@ for run_idx, seed in enumerate(RANDOM_SEEDS):
     set_seed(seed)
     random.seed(seed)
 
-    # Balanced 10k sample from SNLI train
     print("Sampling balanced 10k SNLI training split...")
     c0 = snli_train_full.filter(lambda x: x["label"] == 0).shuffle(seed=seed).select(range(3333))
     c1 = snli_train_full.filter(lambda x: x["label"] == 1).shuffle(seed=seed).select(range(3333))
@@ -141,12 +139,12 @@ for run_idx, seed in enumerate(RANDOM_SEEDS):
     tok_train = train_10k.map(
         tokenize_fn,
         batched=True,
-        remove_columns=[c for c in train_10k.column_names if c not in ["label"]],
+        remove_columns=[c for c in train_10k.column_names if c != "label"],
     )
     tok_val = snli_val.map(
         tokenize_fn,
         batched=True,
-        remove_columns=[c for c in snli_val.column_names if c not in ["label"]],
+        remove_columns=[c for c in snli_val.column_names if c != "label"],
     )
 
     print("Initializing DeBERTa model...")
@@ -169,7 +167,6 @@ for run_idx, seed in enumerate(RANDOM_SEEDS):
         greater_is_better=True,
         logging_steps=50,
         report_to="none",
-        bf16=True,
         save_total_limit=1,
     )
 
@@ -224,13 +221,15 @@ plt.tight_layout()
 plt.savefig("ood_accuracy_by_split.png", dpi=200)
 plt.close()
 
+avg_series = df_results.mean().sort_values()
+
 plt.figure(figsize=(8, 4))
-df_mean.T["Average_Acc"].sort_values().plot(kind="barh")
+avg_series.plot(kind="barh")
 plt.title("Average Accuracy Across Splits")
 plt.xlabel("Mean Accuracy")
 plt.xlim(0, 1.0)
-for index, value in enumerate(df_mean.T["Average_Acc"].sort_values()):
-    plt.text(value, index, f" {value:.3f}", va="center")
+for i, value in enumerate(avg_series):
+    plt.text(value, i, f" {value:.3f}", va="center")
 plt.tight_layout()
 plt.savefig("ood_average_accuracy.png", dpi=200)
 plt.close()
